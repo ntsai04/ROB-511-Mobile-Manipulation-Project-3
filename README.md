@@ -8,8 +8,6 @@ world and displays the resulting choreography in a viewer built for the project.
 
 ## Choreography video
 
-**Screen recording of the live dance:** _[PASTE YOUR SCREEN RECORDING LINK HERE]_
-
 <!-- Replace the line above with:
 **Screen recording of the live dance:** [Watch Luma perform its choreography](YOUR_VIDEO_URL)
 Record the live viewer while make demo is running.
