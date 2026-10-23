@@ -1,3 +1,6 @@
 __pycache__/
 *.py[cod]
 submission.tar.gz
+portfolio-site.zip
+fsm/*.tmp
+portfolio/*.tmp

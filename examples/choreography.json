@@ -1,0 +1,53 @@
+{
+  "initial_state": "wake",
+  "states": [
+    {
+      "name": "wake",
+      "target": {"joint_names": ["base_yaw", "shoulder", "elbow", "wrist_roll", "gripper_left", "gripper_right"], "positions": [0.0, 0.15, -0.45, 0.0, 0.065, 0.065]},
+      "epsilon": 0.018, "hold_seconds": 0.95,
+      "on_arrival": "look_left", "transitions": [{"name": "look_left", "next_state": "look_left"}]
+    },
+    {
+      "name": "look_left",
+      "target": {"joint_names": ["base_yaw", "shoulder", "elbow", "wrist_roll", "gripper_left", "gripper_right"], "positions": [-0.75, 0.55, -0.80, -0.55, 0.055, 0.055]},
+      "epsilon": 0.018, "hold_seconds": 0.8,
+      "on_arrival": "wave_high", "transitions": [{"name": "wave_high", "next_state": "wave_high"}]
+    },
+    {
+      "name": "wave_high",
+      "target": {"joint_names": ["base_yaw", "shoulder", "elbow", "wrist_roll", "gripper_left", "gripper_right"], "positions": [-0.55, -0.25, 0.55, 0.70, 0.07, 0.07]},
+      "epsilon": 0.018, "hold_seconds": 0.8,
+      "on_arrival": "wave_low", "transitions": [{"name": "wave_low", "next_state": "wave_low"}]
+    },
+    {
+      "name": "wave_low",
+      "target": {"joint_names": ["base_yaw", "shoulder", "elbow", "wrist_roll", "gripper_left", "gripper_right"], "positions": [-0.55, -0.25, 0.55, -0.70, 0.025, 0.025]},
+      "epsilon": 0.018, "hold_seconds": 0.8,
+      "on_arrival": "reach", "transitions": [{"name": "reach", "next_state": "reach"}]
+    },
+    {
+      "name": "reach",
+      "target": {"joint_names": ["base_yaw", "shoulder", "elbow", "wrist_roll", "gripper_left", "gripper_right"], "positions": [0.35, 1.0, -0.50, 0.0, 0.07, 0.07]},
+      "epsilon": 0.018, "hold_seconds": 0.9,
+      "on_arrival": "grasp", "transitions": [{"name": "grasp", "next_state": "grasp"}]
+    },
+    {
+      "name": "grasp",
+      "target": {"joint_names": ["base_yaw", "shoulder", "elbow", "wrist_roll", "gripper_left", "gripper_right"], "positions": [0.35, 1.0, -0.50, 0.0, 0.0, 0.0]},
+      "epsilon": 0.006, "hold_seconds": 0.8,
+      "on_arrival": "present", "transitions": [{"name": "present", "next_state": "present"}]
+    },
+    {
+      "name": "present",
+      "target": {"joint_names": ["base_yaw", "shoulder", "elbow", "wrist_roll", "gripper_left", "gripper_right"], "positions": [0.85, 0.20, -0.80, 0.45, 0.025, 0.025]},
+      "epsilon": 0.018, "hold_seconds": 1.0,
+      "on_arrival": "bow", "transitions": [{"name": "bow", "next_state": "bow"}]
+    },
+    {
+      "name": "bow",
+      "target": {"joint_names": ["base_yaw", "shoulder", "elbow", "wrist_roll", "gripper_left", "gripper_right"], "positions": [0.0, 0.70, -1.30, 0.0, 0.055, 0.055]},
+      "epsilon": 0.018, "hold_seconds": 0.95,
+      "on_arrival": "wake", "transitions": [{"name": "wake", "next_state": "wake"}]
+    }
+  ]
+}

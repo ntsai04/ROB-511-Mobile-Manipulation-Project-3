@@ -1,13 +1,45 @@
 """TCP/JSON rosbridge gateway on ``127.0.0.1:9095``.
 
-This is the same small ROS-like switchboard used in Project 1.  Each external
-client gets a reader thread and a writer thread.  Readers parse one JSON value
-per line; writers are the *only* code that writes to their socket, so messages
-from service calls and topic publications cannot interleave their bytes.
+HOW TO READ THIS FILE
+---------------------
+This is the small ROS-like switchboard from Projects 1 and 2. External clients
+open TCP connections and send JSON objects with an op field. There are two
+threads for each accepted socket, with the same responsibilities as before:
 
-Project 3's built-in nodes register their service handlers and topic listeners
-below.  Other services can still be advertised by external clients and are
-forwarded through the Hub exactly as the documented rosbridge subset requires.
+    reader   serve_client() -> parse one line -> handle_request()
+    writer   outgoing.get() -> JSON serialization -> socket.sendall()
+
+Only the writer sends bytes to its socket. Every other thread calls send(),
+which puts a whole message on that client's queue. This prevents a service
+response and a topic publication from interleaving their bytes. Each client
+has its own queue and writer, so one slow socket does not block other clients.
+
+The gateway keeps transport rules here and routing records in Hub. Project 1
+called heap/A* handlers directly. Project 2 introduced local_services and
+topic_listeners; Project 3 keeps that interface for the parameter server and
+robot nodes. src/main.py registers them before starting client threads.
+
+FOLLOW A MESSAGE
+-----------------
+- A topic publish delivers its payload to local listeners and the current
+  matching external subscribers. Topics carry streams, with no reply needed.
+- A local service call invokes its registered handler and returns the handler's
+  result/values/status triple in a service_response envelope.
+- An external service call gets a new provider-side id. Hub remembers the
+  caller's connection and original id until a response, timeout or disconnect.
+  Responses must match both the provider connection and the service name.
+
+PYTHON NOTES
+------------
+- Queue.get() waits for work. Putting None on the queue asks its writer to stop;
+  None cannot be confused with a JSON message because envelopes are dicts.
+- A Lock protects the closed flag and queue insertion as one operation.
+- daemon=True threads end when the foreground runtime exits.
+- json.dumps(..., allow_nan=False) refuses non-finite numbers. Decoder hooks
+  also reject NaN, Infinity and overflowing floats before forwarding them.
+- TCP packets are not messages. A binary readline grows until the newline,
+  allowing up to 4 MiB of UTF-8 payload for large robot descriptions.
+- time.monotonic() measures service deadlines without wall-clock adjustments.
 """
 from __future__ import annotations
 
@@ -41,6 +73,7 @@ class ClientConnection:
         self.connection = connection
         # Writer waits on this queue.  dict = JSON to send.  None = shut down.
         self.outgoing: queue.Queue[dict[str, Any] | None] = queue.Queue()
+        # Hub uses these sets to remove only this connection's registrations.
         self.subscriptions: set[str] = set()
         self.publishers: set[str] = set()
         self.services: set[str] = set()
@@ -53,7 +86,11 @@ class ClientConnection:
         self._writer.start()
 
     def send(self, message: dict[str, Any]) -> None:
-        """Enqueue one outbound JSON object.  Ignored if close() already ran."""
+        """Enqueue one complete envelope without waiting for its socket write.
+
+        The same lock protects send() and close(). A sender cannot enqueue
+        more work after close() has put the shutdown sentinel on this queue.
+        """
         with self._close_lock:
             if not self._closed:
                 self.outgoing.put(message)
@@ -61,15 +98,17 @@ class ClientConnection:
     def _write_loop(self) -> None:
         """Take queued messages and write them as UTF-8 JSON lines.
 
-        OSError covers a peer that already closed.  The finally block always
-        unregisters this client so Hub does not keep a dead socket.
+        The queue serializes all outbound messages for this one socket. Errors
+        in a socket or an unserializable payload close only this connection.
+        Finally always unregisters it, even when cleanup also runs in the reader.
         """
         try:
             while True:
                 message = self.outgoing.get()
                 if message is None:
                     return
-                encoded = json.dumps(message, separators=(",", ":"), allow_nan=False).encode("utf-8")
+                serialized = json.dumps(message, separators=(",", ":"), allow_nan=False)
+                encoded = serialized.encode("utf-8")
                 self.connection.sendall(encoded + b"\n")
         except (OSError, TypeError, ValueError, UnicodeError):
             pass
@@ -110,21 +149,37 @@ class RosbridgeServer:
         self.topic_listeners: dict[str, list[Any]] = {}
 
     def register_local_service(self, name: str, handler: Any) -> None:
-        """Register an in-process service without adding gateway dispatch code."""
+        """Register handler(service_name, args), returning (result, values, status).
+
+        main.py uses the same interface introduced in Project 2. Nodes own
+        argument validation; the gateway owns the JSON response envelope.
+        """
         self.local_services[name] = handler
 
     def register_topic_listener(self, topic: str, listener: Any) -> None:
-        """Register an in-process subscriber used by the project nodes."""
-        self.topic_listeners.setdefault(topic, []).append(listener)
+        """Register listener(message) before client threads begin running."""
+        if topic not in self.topic_listeners:
+            self.topic_listeners[topic] = []
+        self.topic_listeners[topic].append(listener)
 
     def publish_local(self, topic: str, message: Any) -> None:
-        """Publish from an in-process node without a TCP advertisement."""
+        """Deliver a node's publication to local and external subscribers.
+
+        Local delivery passes the same JSON-shaped value directly. External
+        delivery queues an envelope for serialization by each client's writer.
+        """
         self._notify_listeners(topic, message)
         self._broadcast(topic, message)
 
     def _notify_listeners(self, topic: str, message: Any) -> None:
-        """A malformed input to one node must not disable other subscribers."""
-        for listener in tuple(self.topic_listeners.get(topic, ())):
+        """Call each local subscriber, isolating a rejected message to that node.
+
+        Keep the existing diagnostic for a failing callback and continue to
+        the remaining listeners. A node error must not kill a TCP reader or
+        prevent matching external subscribers from receiving the publication.
+        """
+        listeners = list(self.topic_listeners.get(topic, ()))
+        for listener in listeners:
             try:
                 listener(message)
             except Exception as error:
@@ -134,7 +189,11 @@ class RosbridgeServer:
     @staticmethod
     def send_status(client: ClientConnection, level: str, message: str,
                     request: dict[str, Any]) -> None:
-        """rosbridge status message.  Echo request id when the client sent one."""
+        """Send a protocol diagnostic, preserving an optional opaque request id.
+
+        Check key presence rather than truthiness: null, 0 and an empty string
+        are still ids when the sender explicitly supplied them.
+        """
         envelope: dict[str, Any] = {"op": "status", "level": level, "msg": message}
         if "id" in request:
             envelope["id"] = request["id"]
@@ -143,7 +202,11 @@ class RosbridgeServer:
     @staticmethod
     def send_service_response(client: ClientConnection, service: str, request_id: Any,
                               result: bool, values: Any = None, status: str = "") -> None:
-        """Standard service_response.  Missing values become an empty object."""
+        """Build a local service/failure reply; unspecified values become {}.
+
+        External provider responses use their own envelope below so an explicit
+        JSON null in a generic provider's values field remains null.
+        """
         client.send({
             "op": "service_response",
             "service": service,
@@ -154,9 +217,12 @@ class RosbridgeServer:
         })
 
     def disconnect_client(self, client: ClientConnection) -> None:
-        """Unregister in Hub, close the socket, tell waiting callers the provider died.
+        """Close the socket, unregister in Hub, and fail its waiting callers.
 
         close() is safe to call twice (reader finally + writer finally).
+        Mark the client closed first so begin_call() cannot register new work
+        for a provider after Hub has already removed that provider's records.
+        Failure messages are queued only after Hub releases its lock.
         """
         client.close()
         failures = self.hub.disconnect(client)
@@ -167,7 +233,11 @@ class RosbridgeServer:
             )
 
     def expire_calls_forever(self) -> None:
-        """Background loop: fail forwarded calls that sat longer than the timeout."""
+        """Periodically fail forwarded calls whose monotonic deadlines expired.
+
+        Hub removes each record before returning it. A late provider response
+        then finds no route and cannot complete the same request a second time.
+        """
         while True:
             time.sleep(0.25)
             for pending in self.hub.expired_calls():
@@ -177,10 +247,16 @@ class RosbridgeServer:
                 )
 
     def handle_request(self, client: ClientConnection, request: Any) -> None:
-        """Dispatch one parsed JSON object by its ``op`` string."""
-        if not isinstance(request, dict) or not isinstance(request.get("op"), str):
-            self.send_status(client, "error", "request must contain a string op",
-                             request if isinstance(request, dict) else {})
+        """Validate the envelope, then dispatch by the same Project 1/2 op table.
+
+        Each handler checks its own required fields. Unknown object fields are
+        left alone, allowing future clients to add optional protocol metadata.
+        """
+        if not isinstance(request, dict):
+            self.send_status(client, "error", "request must contain a string op", {})
+            return
+        if not isinstance(request.get("op"), str):
+            self.send_status(client, "error", "request must contain a string op", request)
             return
 
         operation = request["op"]
@@ -202,7 +278,11 @@ class RosbridgeServer:
         handler(client, request)
 
     def _advertise(self, client: ClientConnection, request: dict[str, Any]) -> None:
-        """Record an advertised topic.  Stored only on the client."""
+        """Record an advertised topic on its client; repeated requests are safe.
+
+        Type names are required informational strings. The wire contract does
+        not require payload schema checks or prior advertisement to publish.
+        """
         topic = request.get("topic")
         if isinstance(topic, str) and isinstance(request.get("type"), str):
             client.publishers.add(topic)
@@ -210,6 +290,7 @@ class RosbridgeServer:
             self.send_status(client, "error", "advertise requires topic and type", request)
 
     def _unadvertise(self, client: ClientConnection, request: dict[str, Any]) -> None:
+        """Remove this client's publisher registration if it exists."""
         topic = request.get("topic")
         if isinstance(topic, str):
             client.publishers.discard(topic)
@@ -217,7 +298,7 @@ class RosbridgeServer:
             self.send_status(client, "error", "unadvertise requires topic", request)
 
     def _publish(self, client: ClientConnection, request: dict[str, Any]) -> None:
-        """Deliver a client publication to local and external subscribers."""
+        """Deliver any JSON msg value only to current matching subscribers."""
         topic = request.get("topic")
         if not isinstance(topic, str) or "msg" not in request:
             self.send_status(client, "error", "publish requires topic and msg", request)
@@ -232,6 +313,7 @@ class RosbridgeServer:
             subscriber.send(envelope)
 
     def _subscribe(self, client: ClientConnection, request: dict[str, Any]) -> None:
+        """Register before acknowledging, so a following publish can find it."""
         topic = request.get("topic")
         if not isinstance(topic, str) or not isinstance(request.get("type"), str):
             self.send_status(client, "error", "subscribe requires topic and type", request)
@@ -240,6 +322,7 @@ class RosbridgeServer:
         self.send_status(client, "info", f"subscribed to {topic}", request)
 
     def _unsubscribe(self, client: ClientConnection, request: dict[str, Any]) -> None:
+        """Stop routing this topic to the client; repeated requests are safe."""
         topic = request.get("topic")
         if isinstance(topic, str):
             self.hub.unsubscribe(client, topic)
@@ -256,6 +339,7 @@ class RosbridgeServer:
         self.send_status(client, "info", f"advertised service {service}", request)
 
     def _unadvertise_service(self, client: ClientConnection, request: dict[str, Any]) -> None:
+        """Withdraw a service only if this client remains its current provider."""
         service = request.get("service")
         if isinstance(service, str):
             self.hub.unadvertise_service(client, service)
@@ -280,7 +364,9 @@ class RosbridgeServer:
             try:
                 result, values, status = local_handler(service, request["args"])
             except Exception as error:
-                result, values, status = False, {}, f"service rejected request: {error}"
+                result = False
+                values = {}
+                status = f"service rejected request: {error}"
             self.send_service_response(client, service, request["id"], result, values, status)
             return
 
@@ -289,10 +375,13 @@ class RosbridgeServer:
         # service_response cannot be matched to the wrong caller.
         provider_id = "provider-call-" + uuid.uuid4().hex
         deadline = time.monotonic() + SERVICE_TIMEOUT_SECONDS
+        pending = PendingCall(client, request["id"], service, deadline)
+        # Select the provider and register its pending call under the same Hub
+        # lock; separate operations could lose a provider disconnect between them.
         provider = self.hub.begin_call(
             service,
             provider_id,
-            PendingCall(client, request["id"], service, deadline),
+            pending,
         )
         if provider is None:
             self.send_service_response(
@@ -312,18 +401,26 @@ class RosbridgeServer:
         Unknown or already-expired ids are ignored (timeout may have already
         sent result:false).  Generic provider payloads are preserved as sent.
         """
-        provider_id, service = request.get("id"), request.get("service")
+        provider_id = request.get("id")
+        service = request.get("service")
         if (not isinstance(provider_id, str) or not isinstance(service, str)
                 or "values" not in request or "result" not in request):
-            self.send_status(client, "error", "service_response requires service, id, values, and result", request)
+            self.send_status(
+                client, "error", "service_response requires service, id, values, and result", request,
+            )
             return
         pending = self.hub.take_pending_call(client, provider_id, service)
         if pending is None:
             return
+        # Do not coerce generic provider values/result/status. In particular,
+        # values:null must remain null, unlike an omitted local failure value.
         pending.caller.send({
-            "op": "service_response", "service": pending.service,
-            "id": pending.caller_id, "values": request["values"],
-            "result": request["result"], "status": request.get("status", ""),
+            "op": "service_response",
+            "service": pending.service,
+            "id": pending.caller_id,
+            "values": request["values"],
+            "result": request["result"],
+            "status": request.get("status", ""),
         })
 
 
@@ -333,6 +430,11 @@ def serve_client(server: RosbridgeServer, connection: socket.socket) -> None:
     A bounded binary readline grows through the full 4 MiB allowed by the
     protocol; it never truncates large descriptions at a socket packet or
     small fixed buffer.  Invalid JSON only affects the offending connection.
+
+    Count bytes before decoding: the contract's bound concerns UTF-8 bytes,
+    not Python character count. The extra two bytes distinguish a permitted
+    maximum-size payload plus newline from an oversized payload. Close an
+    oversized connection instead of parsing its remainder as a new request.
     """
     client = ClientConnection(server, connection)
     client.start()
@@ -342,14 +444,21 @@ def serve_client(server: RosbridgeServer, connection: socket.socket) -> None:
                 line = incoming.readline(MAX_LINE_BYTES + 2)
                 if not line:
                     break
-                if len(line.rstrip(b"\n")) > MAX_LINE_BYTES:
+                if line.endswith(b"\n"):
+                    frame = line[:-1]
+                else:
+                    frame = line
+                if len(frame) > MAX_LINE_BYTES:
                     break
-                if not line.strip():
+                if not frame.strip():
                     continue
                 try:
-                    request = json.loads(line.decode("utf-8"),
-                                         parse_constant=_invalid_constant,
-                                         parse_float=_finite_float)
+                    text = frame.decode("utf-8")
+                    request = json.loads(
+                        text,
+                        parse_constant=_invalid_constant,
+                        parse_float=_finite_float,
+                    )
                     server.handle_request(client, request)
                 except (json.JSONDecodeError, ValueError, RecursionError):
                     server.send_status(client, "error", "invalid JSON", {})

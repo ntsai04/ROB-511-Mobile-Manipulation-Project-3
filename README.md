@@ -1,63 +1,106 @@
-# Project 3 checkpoint: zero-configuration forward kinematics
+# Project 3: Forward Kinematics and Robot Choreography
 
-This Python implementation reuses Project 1's publish/subscribe hub and TCP/JSON
-gateway, including Project 2's in-process node interfaces. It uses only the
-Python standard library. The three checkpoint nodes share one process and
-communicate through the gateway's service and topic dispatch interfaces:
+**ROB 511 · Mobile Manipulation**
 
-- `param_server` stores arbitrary JSON values with independent per-name versions.
-- `robot_state_publisher` polls `/param_server/get_param`, validates each new
-  `robot_description`, and publishes every joint's zero-configuration transform
-  on `/tf`. Rejected loads leave the previous model in effect. It reports each
-  processed version through `/robot_state_publisher/description_status`.
-- `robot_world_state_publisher` derives the root and traverses the latest `/tf`
-  tree, publishing every link's pose on `/xform_world` as a column-major matrix.
+A robot description, joint feedback, and a finite state machine bring **Luma**, a
+custom inspection arm, to life. This project computes every link's pose in the
+world and displays the resulting choreography in a viewer built for the project.
 
-URDF interpretation, quaternion math, and transform composition are implemented
-here; `xml.etree.ElementTree` handles XML syntax. The gateway reads complete
-newline-delimited frames up to 4 MiB. The runtime starts without a robot loaded,
-listens at `127.0.0.1:9095`, and publishes complete snapshots at 10 Hz after loading.
+## Choreography video
 
-## Run and verify
+**Screen recording of the live dance:** _[PASTE YOUR SCREEN RECORDING LINK HERE]_
 
-With Python 3.10 or newer and GNU Make, from this directory:
+<!-- Replace the line above with:
+**Screen recording of the live dance:** [Watch Luma perform its choreography](YOUR_VIDEO_URL)
+Record the live viewer while make demo is running.
+-->
+
+The preview below was exported from transforms captured from the running robot
+software. The space above is reserved for a screen recording of the live demo.
+
+<video controls playsinline preload="metadata" poster="portfolio/poster.png" style="width: 100%; max-width: 960px;">
+  <source src="portfolio/demo.webm" type="video/webm">
+  <a href="portfolio/demo.webm">Watch the recorded runtime preview.</a>
+</video>
+
+[Watch or download the 24-second preview](portfolio/demo.webm) ·
+[Explore the interactive replay](https://ntsai04.github.io/ROB-511-Mobile-Manipulation-Project-3/viewer/?replay=../portfolio/demo_recording.json)
+
+The replay supports dragging to orbit and scrolling to zoom. It uses captured
+runtime messages, so it can be viewed without starting the robot software.
+
+## The robot
+
+Luma has **twelve links and six movable joints**: a rotating base, shoulder, elbow,
+wrist roll, and two opposing sliding gripper fingers. Fixed joints attach details
+such as the base ring, camera shell, and eyes. The robot is described in
+[a custom URDF](examples/showcase.urdf) using boxes, cylinders, and spheres.
+
+The different joint types make the motion easy to see: the arm rotates to reach
+and wave, while the fingers translate to open and close the gripper.
+
+## The choreography
+
+The [choreography table](examples/choreography.json) defines eight states in a loop:
+
+`wake → look_left → wave_high → wave_low → reach → grasp → present → bow → wake`
+
+Luma wakes up, turns to look left, and waves by rolling its wrist between two
+poses. It then reaches forward, closes its gripper, turns to present it, and bows
+before starting again.
+
+Each state specifies joint positions and a named transition. On entry, the finite
+state machine publishes the target on `/joint_trajectory`. A proportional joint
+servo moves toward it and publishes `/joint_states`. The FSM waits until every
+targeted joint is within the state's tolerance, then holds the pose briefly before
+following the next transition. The sequence therefore advances using joint
+feedback; one loop takes approximately twenty seconds.
+
+## How I drew it
+
+I built a browser viewer using JavaScript and Canvas, with a small Python adapter
+acting as an **external client** of the runtime. The adapter subscribes over the
+same TCP/JSON protocol used by other clients and forwards messages to the browser
+through Server-Sent Events.
+
+The robot state publisher computes parent-to-child transforms on `/tf`. The world
+state publisher composes the tree with the root's global pose and publishes every
+link on `/xform_world`. The viewer uses those supplied world transforms to place
+the links.
+
+For each link, the viewer reads its first URDF visual and draws its primitive
+geometry. It multiplies the link's world matrix by the visual's local origin:
+`T_global_visual = T_global_link × T_link_visual`. The incoming matrices contain
+16 numbers in **column-major order**, with translation at indices 12, 13, and 14.
+A perspective camera projects the transformed geometry onto the canvas. Orbiting
+the camera changes the view while the robot's world coordinates remain z-up.
+
+[Viewer source](viewer/viewer.js) · [TCP-to-browser adapter](tools/viewer_server.py)
+
+## Run and record the dance
+
+From the project directory, build once, then run these commands in two terminals:
 
 ```sh
 make build
-make run
+make demo
 ```
-
-Keep `make run` in the foreground. In another terminal, connect a TCP client and
-call `/param_server/set_param` with `name: "robot_description"` and a URDF string
-as `value`. Poll the description status until its `version` reaches the version
-returned by `set_param`, then subscribe to `/tf` and `/xform_world` using the
-protocol in `spec/ROSBRIDGE_PROTOCOL.md`. The example client in
-`docs/PROJECT3_FK.md` can load `robots/fetch/fetch.urdf`.
 
 ```sh
-make test         # launches a separate runtime on port 9095; stop make run first
-make submission   # writes submission.tar.gz with Makefile at its root
-make clean        # removes Python caches and the generated archive
+make viewer
 ```
 
-`bash make_submission.sh python` also packages the project. On Windows without
-Make, the corresponding commands are `python -m compileall -q src tools tests`,
-`python src/main.py`, `python -m unittest discover -s tests -v`, and
-`python tools/package_submission.py`. With Make and a different interpreter name,
-use `make PYTHON=python run` (and the same override for the other targets).
+Open **http://127.0.0.1:8080/viewer/** and screen-record the robot moving through
+the choreography. `make demo` loads the custom Luma robot and choreography shown
+above. Paste the uploaded recording's link into the video section of this README.
 
-Tests exercise the public TCP boundary: parameter versions and errors, real XML,
-all required description rejection categories, rollback and replacement, hand-
-calculated 3D chains and branches, unmodified Fetch, and large request/reply lines.
+See the [running and recording guide](docs/RUNNING.md) for Windows commands,
+runtime services, and submission instructions, or the
+[code walkthrough](docs/CODE_WALKTHROUGH.md) for the implementation.
 
-## Checkpoint scope
+## Credits
 
-All joint positions are zero and the world pose is the identity. Joint-state
-motion, `/global_pose`, the servo/FSM demo, viewer, and portfolio video belong to
-the remaining final-project work. This checkpoint has no `make demo` target.
-
-The authoritative contracts are `spec/FK_API.md` and
-`spec/ROBOT_DESCRIPTION.md`; the original handout is `docs/PROJECT3_FK.md`.
-
-Fetch robot description © Fetch Robotics, Inc., CC BY-NC-SA 4.0. The bundled URDF
-is unmodified; its attribution and license remain in `robots/fetch/LICENSE.md`.
+Luma's URDF and primitive geometry were created for this project. The repository
+also includes the course kit's Fetch description:
+**Fetch robot description © Fetch Robotics, Inc., CC BY-NC-SA 4.0**.
+Its [license](robots/fetch/LICENSE.md) is included with the description.

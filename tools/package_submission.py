@@ -6,7 +6,7 @@ import tarfile
 
 ROOT = Path(__file__).resolve().parents[1]
 INCLUDE = ("Makefile", "README.md", "make_submission.sh", "src", "tools", "tests",
-           "spec", "docs", "robots")
+           "spec", "docs", "robots", "examples", "viewer", "portfolio")
 
 
 def main() -> None:
@@ -14,7 +14,7 @@ def main() -> None:
 
     def source_only(member: tarfile.TarInfo) -> tarfile.TarInfo | None:
         parts = Path(member.name).parts
-        if "__pycache__" in parts or member.name.endswith((".pyc", ".pyo")):
+        if "__pycache__" in parts or member.name.endswith((".pyc", ".pyo", ".tmp")):
             return None
         return member
 

@@ -1,0 +1,51 @@
+<?xml version="1.0"?>
+<!-- Luma: a tiny inspection arm made entirely from portable URDF primitives. -->
+<robot name="Luma">
+  <link name="base_link">
+    <visual><origin xyz="0 0 0.09"/><geometry><cylinder radius="0.34" length="0.18"/></geometry><material name="midnight"><color rgba="0.055 0.09 0.16 1"/></material></visual>
+  </link>
+  <link name="base_ring">
+    <visual><geometry><cylinder radius="0.35" length="0.025"/></geometry><material name="mint"><color rgba="0.30 0.96 0.74 1"/></material></visual>
+  </link>
+  <joint name="base_ring_mount" type="fixed"><parent link="base_link"/><child link="base_ring"/><origin xyz="0 0 0.16"/></joint>
+  <link name="turret">
+    <visual><origin xyz="0 0 0.12"/><geometry><cylinder radius="0.18" length="0.24"/></geometry><material name="blue"><color rgba="0.12 0.35 0.52 1"/></material></visual>
+  </link>
+  <joint name="base_yaw" type="continuous"><parent link="base_link"/><child link="turret"/><origin xyz="0 0 0.18"/><axis xyz="0 0 1"/></joint>
+  <link name="upper_arm">
+    <visual><origin xyz="0 0 0.31"/><geometry><box size="0.16 0.20 0.62"/></geometry><material name="teal"><color rgba="0.12 0.73 0.73 1"/></material></visual>
+  </link>
+  <joint name="shoulder" type="revolute"><parent link="turret"/><child link="upper_arm"/><origin xyz="0 0 0.24"/><axis xyz="0 1 0"/><limit lower="-0.9" upper="1.1" effort="20" velocity="2"/></joint>
+  <link name="elbow_cap">
+    <visual><origin rpy="1.5707963267948966 0 0"/><geometry><cylinder radius="0.13" length="0.23"/></geometry><material name="navy"><color rgba="0.08 0.15 0.25 1"/></material></visual>
+  </link>
+  <joint name="elbow_cap_mount" type="fixed"><parent link="upper_arm"/><child link="elbow_cap"/><origin xyz="0 0 0.62"/></joint>
+  <link name="forearm">
+    <visual><origin xyz="0 0 0.26"/><geometry><box size="0.13 0.17 0.52"/></geometry><material name="cyan"><color rgba="0.32 0.87 0.92 1"/></material></visual>
+  </link>
+  <joint name="elbow" type="revolute"><parent link="upper_arm"/><child link="forearm"/><origin xyz="0 0 0.62"/><axis xyz="0 1 0"/><limit lower="-1.6" upper="1.6" effort="15" velocity="2"/></joint>
+  <link name="camera_shell">
+    <visual><geometry><box size="0.20 0.27 0.17"/></geometry><material name="white"><color rgba="0.88 0.96 0.96 1"/></material></visual>
+  </link>
+  <joint name="camera_mount" type="fixed"><parent link="forearm"/><child link="camera_shell"/><origin xyz="0.08 0 0.40"/></joint>
+  <link name="eye_left">
+    <visual><geometry><sphere radius="0.038"/></geometry><material name="eyes"><color rgba="0.025 0.06 0.10 1"/></material></visual>
+  </link>
+  <joint name="eye_left_mount" type="fixed"><parent link="camera_shell"/><child link="eye_left"/><origin xyz="0.104 0.073 0.01"/></joint>
+  <link name="eye_right">
+    <visual><geometry><sphere radius="0.038"/></geometry><material name="eyes"><color rgba="0.025 0.06 0.10 1"/></material></visual>
+  </link>
+  <joint name="eye_right_mount" type="fixed"><parent link="camera_shell"/><child link="eye_right"/><origin xyz="0.104 -0.073 0.01"/></joint>
+  <link name="wrist">
+    <visual><origin xyz="0 0 0.06"/><geometry><cylinder radius="0.105" length="0.12"/></geometry><material name="gold"><color rgba="1.0 0.73 0.27 1"/></material></visual>
+  </link>
+  <joint name="wrist_roll" type="revolute"><parent link="forearm"/><child link="wrist"/><origin xyz="0 0 0.52"/><axis xyz="1 0 0"/><limit lower="-0.9" upper="0.9" effort="5" velocity="2"/></joint>
+  <link name="finger_left">
+    <visual><origin xyz="0 0 0.11"/><geometry><box size="0.065 0.055 0.22"/></geometry><material name="gold"><color rgba="1.0 0.73 0.27 1"/></material></visual>
+  </link>
+  <joint name="gripper_left" type="prismatic"><parent link="wrist"/><child link="finger_left"/><origin xyz="0 0.05 0.12"/><axis xyz="0 1 0"/><limit lower="0" upper="0.07" effort="4" velocity="0.2"/></joint>
+  <link name="finger_right">
+    <visual><origin xyz="0 0 0.11"/><geometry><box size="0.065 0.055 0.22"/></geometry><material name="gold"><color rgba="1.0 0.73 0.27 1"/></material></visual>
+  </link>
+  <joint name="gripper_right" type="prismatic"><parent link="wrist"/><child link="finger_right"/><origin xyz="0 -0.05 0.12"/><axis xyz="0 -1 0"/><limit lower="0" upper="0.07" effort="4" velocity="0.2"/></joint>
+</robot>
