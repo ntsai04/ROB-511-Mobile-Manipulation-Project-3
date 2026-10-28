@@ -1,9 +1,10 @@
 PYTHON ?= python3
+VIS_PORT ?= 8003
 
-.PHONY: build run demo viewer record portfolio test submission clean
+.PHONY: build run demo viewer record portfolio test visualizer submission clean
 
 build:
-	$(PYTHON) -m compileall -q src tools tests
+	$(PYTHON) -m compileall -q src
 
 run:
 	$(PYTHON) src/main.py
@@ -21,7 +22,10 @@ portfolio:
 	$(PYTHON) tools/package_portfolio.py
 
 test:
-	$(PYTHON) -m unittest discover -s tests -v
+	@$(PYTHON) tests/run_tests.py $(TESTS)
+
+visualizer:
+	@$(PYTHON) debug_visualizer/server.py --port $(VIS_PORT)
 
 submission:
 	$(PYTHON) tools/package_submission.py

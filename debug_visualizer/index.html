@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Project 3 · Frame Lab</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<header><div><span class="eyebrow">ROB 511 / MUTATION WORKBENCH</span><h1>Frame Lab <span>03</span></h1><p>Trace a robot from URDF to local edges to world transforms.</p></div><div class="status"><span id="light"></span><span id="status">Waiting for runtime</span><button id="refresh">Capture frames</button></div></header>
+<main>
+<aside class="panel controls"><h2><b>01</b> Robot description</h2><p class="hint">Load a fixture, paste a URDF, or fetch the description already running.</p><div class="row"><button id="example">Example arm</button><button id="fetch">Fetch current</button></div><label for="urdf">URDF source</label><textarea id="urdf" spellcheck="false"></textarea><button id="load" class="primary">Load robot into runtime</button><div id="description" class="notice">No description captured</div>
+<h2><b>02</b> Joint configuration</h2><div id="joints" class="hint">Load a robot to generate joint controls.</div><button id="apply" class="primary">Publish joint states</button>
+<h2><b>03</b> Root pose</h2><div class="pose-grid" id="pose"></div><button id="applyPose">Publish global pose</button><p class="hint">Values are meters and radians. Each publication replaces the joint state; fixed joints have no slider.</p></aside>
+<section class="workspace"><div class="panel stage"><div class="stage-top"><div><span class="eyebrow">ACTUAL /xform_world</span><h2>World frame explorer</h2></div><div class="row"><label><input id="axes" type="checkbox" checked> Frame axes</label><button id="fit">Fit view</button></div></div><canvas id="canvas" aria-label="Interactive robot coordinate frame view"></canvas><div class="legend"><span class="x">X</span><span class="y">Y</span><span class="z">Z</span><span>Drag to orbit · wheel to zoom · click a link below to inspect</span></div></div>
+<div class="panel inspect"><div><h2>Frame inspector</h2><span id="frameCount" class="hint">No frame messages yet</span></div><div class="inspector-grid"><div id="links"></div><div><h3 id="selected">Select a frame</h3><div id="matrix" class="matrix"></div><pre id="edge">Local /tf edge appears here.</pre></div></div></div>
+<details class="panel"><summary>Wire messages and diagnostics</summary><p class="hint">All displayed poses come from this runtime. A failed request or missing publication remains visible here.</p><pre id="wire">No messages yet.</pre></details></section>
+</main><footer>LOCAL DEBUGGING TOOL · TCP 9095 via the local HTTP bridge · Stop this tool before running the exam autograder.</footer><script src="app.js"></script></body></html>
