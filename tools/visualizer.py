@@ -8,18 +8,57 @@ import socket
 import threading
 import time
 import uuid
+import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCK = threading.Lock()
-EXAMPLE = '''<robot name="Sample arm">
-  <link name="base"/><link name="shoulder"/><link name="slider"/><link name="tip"/><link name="branch"/>
-  <joint name="turn" type="continuous"><parent link="base"/><child link="shoulder"/>
-    <origin xyz="0 0 .4" rpy=".2 -.1 .3"/><axis xyz="0 0 2"/></joint>
-  <joint name="slide" type="prismatic"><parent link="shoulder"/><child link="slider"/>
-    <origin xyz=".5 0 .2" rpy="0 0 .7"/><axis xyz="2 0 0"/><limit lower="-.2" upper=".8"/></joint>
-  <joint name="tool" type="fixed"><parent link="slider"/><child link="tip"/><origin xyz=".35 0 0" rpy="0 .5 0"/></joint>
-  <joint name="side" type="fixed"><parent link="base"/><child link="branch"/><origin xyz="0 -.5 .2" rpy=".4 .2 -.3"/></joint>
-</robot>'''
+
+
+def default_description():
+    """Use the showcase geometry with an offset mounting for two arm joints."""
+    robot = ET.fromstring((ROOT / "examples" / "showcase.urdf").read_text(encoding="utf-8"))
+    mounts = {"shoulder": ".2 -.1 .3", "wrist_roll": ".1 .2 -.25"}
+    for joint in robot.findall("joint"):
+        if joint.get("name") in mounts:
+            origin = joint.find("origin")
+            if origin is None:
+                origin = ET.SubElement(joint, "origin")
+            origin.set("rpy", mounts[joint.get("name")])
+    return ET.tostring(robot, encoding="unicode")
+
+
+def joint_limits(urdf):
+    """Read input constraints only; the project runtime still computes every pose."""
+    if not isinstance(urdf, str) or not urdf.strip() or len(urdf) > 2_000_000:
+        raise ValueError("Supply URDF text")
+    try:
+        robot = ET.fromstring(urdf.lstrip("\ufeff \t\r\n"))
+    except ET.ParseError as error:
+        raise ValueError("The URDF must contain valid XML") from error
+    namespace = robot.tag[:robot.tag.index("}") + 1] if robot.tag.startswith("{") else ""
+    if robot.tag != namespace + "robot":
+        raise ValueError("The URDF root must be a robot element")
+    limits = {}
+    for joint in robot.findall(namespace + "joint"):
+        name, kind = joint.get("name"), joint.get("type")
+        if not name or not name.strip() or name in limits:
+            raise ValueError("URDF joints need unique, nonempty names")
+        if kind not in ("fixed", "continuous", "revolute", "prismatic"):
+            raise ValueError("Unsupported joint type for " + name)
+        lower = upper = None
+        if kind in ("revolute", "prismatic"):
+            element = joint.find(namespace + "limit")
+            if element is None:
+                raise ValueError("Joint " + name + " needs a URDF limit element")
+            try:
+                lower = float(element.get("lower", "0"))
+                upper = float(element.get("upper", "0"))
+            except ValueError as error:
+                raise ValueError("Joint " + name + " needs numeric limits") from error
+            if not math.isfinite(lower) or not math.isfinite(upper) or lower > upper:
+                raise ValueError("Joint " + name + " needs finite limits with lower <= upper")
+        limits[name] = (kind, lower, upper)
+    return limits
 
 
 class Client:
@@ -73,7 +112,16 @@ class Client:
         self.wait(lambda m: m.get("op") == "status" and m.get("id") == request_id)
 
 
-def configuration(body):
+def finite_number(value):
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def configuration(body, limits=None):
     if not isinstance(body, dict):
         raise ValueError("Supply a configuration object")
     joints = body.get("joints", {})
@@ -82,10 +130,27 @@ def configuration(body):
         raise ValueError("Supply named joint positions")
     if not isinstance(xyz, list) or not isinstance(rpy, list) or len(xyz) != 3 or len(rpy) != 3:
         raise ValueError("Global translation and RPY must contain three numbers")
-    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
-               for v in list(joints.values()) + xyz + rpy):
+    if not all(finite_number(v) for v in list(joints.values()) + xyz + rpy):
         raise ValueError("Use finite joint positions and global pose values")
-    return {"joints": dict(joints), "xyz": list(xyz), "rpy": list(rpy)}
+    joints = dict(joints)
+    if limits is not None:
+        unknown = joints.keys() - limits.keys()
+        if unknown:
+            raise ValueError("Unknown joint: " + sorted(unknown)[0])
+        for name, (kind, lower, upper) in limits.items():
+            if kind == "fixed":
+                if joints.get(name, 0) != 0:
+                    raise ValueError("Joint " + name + " is fixed")
+                joints[name] = 0
+            elif kind == "continuous":
+                joints.setdefault(name, 0)
+            else:
+                value = joints.get(name, min(upper, max(lower, 0)))
+                tolerance = 1e-12 * max(1, abs(lower), abs(upper))
+                if value < lower - tolerance or value > upper + tolerance:
+                    raise ValueError("Joint " + name + " must stay within its displayed URDF limits")
+                joints[name] = min(upper, max(lower, value))
+    return {"joints": joints, "xyz": list(xyz), "rpy": list(rpy)}
 
 
 def load_description(client, urdf):
@@ -127,13 +192,13 @@ def publish_pose(client, body):
 def evaluate(body):
     if not isinstance(body, dict):
         raise ValueError("Supply a configuration object")
-    configuration(body)
+    pose = configuration(body, joint_limits(body["urdf"]))
     client = Client()
     try:
         client.subscribe("/tf")
         client.subscribe("/xform_world")
         load_description(client, body["urdf"])
-        return publish_pose(client, body)
+        return publish_pose(client, pose)
     finally:
         client.close()
 
@@ -147,12 +212,11 @@ class Motion:
         if not isinstance(body, dict):
             raise ValueError("Supply motion inputs")
         self.urdf = body["urdf"]
-        if not isinstance(self.urdf, str) or len(self.urdf) > 2_000_000:
-            raise ValueError("Supply URDF text")
-        self.start = configuration(body["start"])
-        self.goal = configuration(body["goal"])
+        limits = joint_limits(self.urdf)
+        self.start = configuration(body["start"], limits)
+        self.goal = configuration(body["goal"], limits)
         self.duration = body.get("duration", 3)
-        if isinstance(self.duration, bool) or not isinstance(self.duration, (int, float)) or not math.isfinite(self.duration) or not .2 <= self.duration <= 120:
+        if not finite_number(self.duration) or not .2 <= self.duration <= 120:
             raise ValueError("Use a duration from 0.2 to 120 seconds")
         self.id = uuid.uuid4().hex
         self.condition = threading.Condition()
@@ -182,11 +246,17 @@ class Motion:
 
     def input_at(self, elapsed):
         fraction = min(1, max(0, elapsed / self.duration))
-        names = set(self.start["joints"]) | set(self.goal["joints"])
+        def blend(a, b):
+            if fraction == 0:
+                return a
+            if fraction == 1:
+                return b
+            value = (1 - fraction) * a + fraction * b
+            return min(max(a, b), max(min(a, b), value))
         return {
-            "joints": {name: self.start["joints"].get(name, 0) + fraction * (self.goal["joints"].get(name, self.start["joints"].get(name, 0)) - self.start["joints"].get(name, 0)) for name in names},
-            "xyz": [a + fraction * (b-a) for a, b in zip(self.start["xyz"], self.goal["xyz"])],
-            "rpy": [a + fraction * (b-a) for a, b in zip(self.start["rpy"], self.goal["rpy"])],
+            "joints": {name: blend(a, self.goal["joints"][name]) for name, a in self.start["joints"].items()},
+            "xyz": [blend(a, b) for a, b in zip(self.start["xyz"], self.goal["xyz"])],
+            "rpy": [blend(a, b) for a, b in zip(self.start["rpy"], self.goal["rpy"])],
         }
 
 
@@ -321,7 +391,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?", 1)[0]
         if path == "/api/example":
-            return self.json({"urdf": EXAMPLE})
+            return self.json({"urdf": default_description()})
         if path == "/api/health":
             return self.json({"ok": True, "runtime": "%s:%s" % (OPTIONS.runtime_host, OPTIONS.runtime_port)})
         if path == "/api/stream":
@@ -375,7 +445,9 @@ class Handler(BaseHTTPRequestHandler):
             pass
         except (OSError, TimeoutError):
             self.json({"error": "The robot service is unavailable. Start make run in another terminal."}, 503)
-        except (KeyError, TypeError, ValueError):
+        except ValueError as error:
+            self.json({"error": str(error)}, 400)
+        except (KeyError, TypeError):
             self.json({"error": "Unable to load this configuration. Check the robot description and input values."}, 400)
 
 
