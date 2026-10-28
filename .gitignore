@@ -1,6 +1,5 @@
 __pycache__/
 *.py[cod]
+tests/.build/
 submission.tar.gz
-portfolio-site.zip
-fsm/*.tmp
-portfolio/*.tmp
+submission.tar.gz.tmp

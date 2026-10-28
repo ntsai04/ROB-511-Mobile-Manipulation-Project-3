@@ -1,75 +1,71 @@
-/* Buildless, dependency-free robot viewer. World matrices remain column-major. */
 "use strict";
-const $ = id => document.getElementById(id), canvas = $("scene"), ctx = canvas.getContext("2d");
-const params = new URLSearchParams(location.search), replayURL = params.get("replay");
-if(params.get("embed")==="1")document.body.classList.add("embedded");
-let visuals=[], edges=[], joints=[], worlds=new Map(), jointValues={}, robotName="Luma";
-let state={current_state:null,running:true,time_in_state:0}, replay=null, cursor=0, replayTime=0, playing=true;
-let previousClock=performance.now(), exporting=false, exportRecorder=null, autoFitted=false;
-let camera={yaw:-1.05,pitch:.37,distance:4.5,target:[0,0,.85]};
-const eyeDefault={...camera,target:[...camera.target]};
-const I=()=>[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1];
-function mul(a,b){const r=new Array(16).fill(0);for(let c=0;c<4;c++)for(let row=0;row<4;row++)for(let k=0;k<4;k++)r[4*c+row]+=a[4*k+row]*b[4*c+k];return r;}
-function point(m,p){return [m[0]*p[0]+m[4]*p[1]+m[8]*p[2]+m[12],m[1]*p[0]+m[5]*p[1]+m[9]*p[2]+m[13],m[2]*p[0]+m[6]*p[1]+m[10]*p[2]+m[14]];}
-const sub=(a,b)=>a.map((v,i)=>v-b[i]), dot=(a,b)=>a.reduce((s,v,i)=>s+v*b[i],0);
-const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
-const norm=a=>{const n=Math.hypot(...a);return a.map(v=>v/(n||1));};
-const vector=(text,fallback)=>text?text.trim().split(/\s+/).map(Number):fallback;
+const $=id=>document.getElementById(id),canvas=$("scene"),ctx=canvas.getContext("2d");
+let model=null,worlds=new Map(),yaw=-.8,pitch=.55,zoom=1,center=[0,0,0],scale=170;
 const direct=(el,name)=>Array.from(el.children).find(e=>e.localName===name);
-function origin(el){if(!el)return I();const p=vector(el.getAttribute("xyz"),[0,0,0]),[r,t,y]=vector(el.getAttribute("rpy"),[0,0,0]);const cr=Math.cos(r),sr=Math.sin(r),cp=Math.cos(t),sp=Math.sin(t),cy=Math.cos(y),sy=Math.sin(y);return [cy*cp,sy*cp,-sp,0,cy*sp*sr-sy*cr,sy*sp*sr+cy*cr,cp*sr,0,cy*sp*cr+sy*sr,sy*sp*cr-cy*sr,cp*cr,0,...p,1];}
-function box(size){const [x,y,z]=size.map(v=>v/2);const v=[[-x,-y,-z],[x,-y,-z],[x,y,-z],[-x,y,-z],[-x,-y,z],[x,-y,z],[x,y,z],[-x,y,z]];return [[0,3,2,1],[4,5,6,7],[0,1,5,4],[1,2,6,5],[2,3,7,6],[3,0,4,7]].map(f=>f.map(i=>v[i]));}
-function cylinder(radius,length){const faces=[],n=16,bottom=[],top=[];for(let i=0;i<n;i++){const a=i*2*Math.PI/n,b=(i+1)*2*Math.PI/n,p=[radius*Math.cos(a),radius*Math.sin(a)],q=[radius*Math.cos(b),radius*Math.sin(b)];faces.push([[...p,-length/2],[...q,-length/2],[...q,length/2],[...p,length/2]]);bottom.unshift([...p,-length/2]);top.push([...p,length/2]);}faces.push(bottom,top);return faces;}
-function sphere(radius){const faces=[],n=14,m=8;const p=(i,j)=>{const a=2*Math.PI*i/n,b=Math.PI*j/m;return [radius*Math.sin(b)*Math.cos(a),radius*Math.sin(b)*Math.sin(a),radius*Math.cos(b)];};for(let j=0;j<m;j++)for(let i=0;i<n;i++)faces.push([p(i,j),p(i+1,j),p(i+1,j+1),p(i,j+1)]);return faces;}
-function parseRobot(text){const doc=new DOMParser().parseFromString(text,"application/xml");if(doc.querySelector("parsererror"))throw Error("Robot description is not valid XML");const robot=doc.documentElement;visuals=[];edges=[];joints=[];const materials=new Map();for(const el of robot.children)if(el.localName==="material"){const c=direct(el,"color");if(c)materials.set(el.getAttribute("name"),vector(c.getAttribute("rgba"),[.3,.8,.75,1]));}for(const el of robot.children){if(el.localName==="link"){const visual=direct(el,"visual");if(!visual)continue;const geometry=direct(visual,"geometry"),shape=geometry?.firstElementChild;if(!shape)continue;let faces;if(shape.localName==="box")faces=box(vector(shape.getAttribute("size"),[.1,.1,.1]));else if(shape.localName==="cylinder")faces=cylinder(Number(shape.getAttribute("radius")),Number(shape.getAttribute("length")));else if(shape.localName==="sphere")faces=sphere(Number(shape.getAttribute("radius")));else continue;const material=direct(visual,"material"),color=material&&direct(material,"color");const rgba=color?vector(color.getAttribute("rgba"),[.3,.8,.75,1]):(materials.get(material?.getAttribute("name"))||[.3,.8,.75,1]);visuals.push({link:el.getAttribute("name"),matrix:origin(direct(visual,"origin")),faces,color:rgba});}else if(el.localName==="joint"){const parent=direct(el,"parent")?.getAttribute("link"),child=direct(el,"child")?.getAttribute("link");if(parent&&child)edges.push([parent,child]);if(el.getAttribute("type")!=="fixed"){const limit=direct(el,"limit");joints.push({name:el.getAttribute("name"),type:el.getAttribute("type"),lower:Number(limit?.getAttribute("lower")??-Math.PI),upper:Number(limit?.getAttribute("upper")??Math.PI)});}}}robotName=robot.getAttribute("name")||"Robot";$("robot-name").textContent=robotName.charAt(0).toUpperCase()+robotName.slice(1);$("description").textContent=robotName.toLowerCase()==="luma"?"A compact inspection arm, following a joint-space choreography.":`${edges.length+1} links and ${joints.length} movable joints.${visuals.length?"":" Frame skeleton shown; external mesh loading is unavailable."}`;$("joints").replaceChildren();for(const joint of joints){const row=document.createElement("div");row.className="joint";const label=document.createElement("div");label.className="joint-label";const name=document.createElement("span");name.textContent=joint.name.replaceAll("_"," ");const number=document.createElement("b");number.textContent="0.00";label.append(name,number);const track=document.createElement("div");track.className="track";track.append(document.createElement("i"));row.append(label,track);$("joints").append(row);joint.row=row;}autoFitted=false;}
-function accept(topic,msg){if(topic==="robot_description"){if(typeof msg==="string")parseRobot(msg);}else if(topic==="/xform_world"){worlds=new Map(msg.transforms.map(entry=>[entry.child_frame_id,entry.matrix]));$("link-count").textContent=`${worlds.size} LINKS`;if(!autoFitted&&worlds.size){const p=[...worlds.values()].map(m=>m.slice(12,15));const maxZ=Math.max(...p.map(v=>v[2]),1.2);camera.target=[0,0,maxZ*.47];camera.distance=Math.max(3.7,maxZ*2.1);autoFitted=true;}}else if(topic==="/joint_states"){jointValues=Object.fromEntries(msg.name.map((name,i)=>[name,msg.position[i]]));for(const joint of joints){const value=jointValues[joint.name]??0;joint.row.querySelector("b").textContent=value.toFixed(2)+(joint.type==="prismatic"?" m":" rad");joint.row.querySelector("i").style.width=`${Math.max(0,Math.min(100,100*(value-joint.lower)/(joint.upper-joint.lower||1)))}%`;}}else if(topic==="/fsm/status"){state=msg;$("state").textContent=(msg.current_state||"Ready").replaceAll("_"," ");$("running").textContent=msg.running?"Running sequence":"Paused";$("state-time").textContent=`${(msg.time_in_state||0).toFixed(1)} s`;$("toggle").textContent=msg.running?"Pause choreography":"Resume choreography";}else if(topic==="connection"){setConnection(msg.connected?"Runtime connected":"Waiting for runtime",msg.connected);}}
-function setConnection(text,on){$("connection").textContent=text;$("connection-dot").classList.toggle("on",on);}
-function project(p){const {yaw,pitch,distance,target}=camera;const eye=[target[0]+distance*Math.cos(pitch)*Math.cos(yaw),target[1]+distance*Math.cos(pitch)*Math.sin(yaw),target[2]+distance*Math.sin(pitch)];const f=norm(sub(target,eye)),right=norm(cross(f,[0,0,1])),up=cross(right,f),v=sub(p,eye),depth=dot(v,f);if(depth<.05)return null;const scale=870/depth;return [640+dot(v,right)*scale,365-dot(v,up)*scale,depth];}
-function line(a,b,color,width=1){const p=project(a),q=project(b);if(!p||!q)return;ctx.beginPath();ctx.moveTo(p[0],p[1]);ctx.lineTo(q[0],q[1]);ctx.strokeStyle=color;ctx.lineWidth=width;ctx.stroke();}
-function render(){const bg=ctx.createLinearGradient(0,0,0,720);bg.addColorStop(0,"#111f2e");bg.addColorStop(1,"#182b3c");ctx.fillStyle=bg;ctx.fillRect(0,0,1280,720);for(let i=-12;i<=12;i++){const k=i*.25;line([k,-3,0],[k,3,0],i===0?"#355162":"#253c4e",i===0?1.4:.7);line([-3,k,0],[3,k,0],i===0?"#355162":"#253c4e",i===0?1.4:.7);}ctx.fillStyle="#0003";const ground=project([0,0,.005]);if(ground){ctx.beginPath();ctx.ellipse(ground[0],ground[1],150,35,0,0,Math.PI*2);ctx.fill();}const faces=[];for(const visual of visuals){const link=worlds.get(visual.link);if(!link)continue;const transform=mul(link,visual.matrix);for(const polygon of visual.faces){const points=polygon.map(p=>point(transform,p)),screen=points.map(project);if(screen.some(p=>!p))continue;const normal=norm(cross(sub(points[1],points[0]),sub(points[2],points[0])));const shade=.57+.43*Math.abs(dot(normal,norm([-.5,-.8,1])));faces.push({screen,depth:screen.reduce((sum,p)=>sum+p[2],0)/screen.length,color:visual.color,shade});}}faces.sort((a,b)=>b.depth-a.depth);if(!visuals.length)for(const [parent,child] of edges){const a=worlds.get(parent),b=worlds.get(child);if(a&&b)line(a.slice(12,15),b.slice(12,15),"#7ad9cc",8);}for(const face of faces){ctx.beginPath();face.screen.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));ctx.closePath();const [r,g,b,a=1]=face.color;ctx.fillStyle=`rgba(${Math.round(r*255*face.shade)},${Math.round(g*255*face.shade)},${Math.round(b*255*face.shade)},${a})`;ctx.fill();ctx.strokeStyle="#13233066";ctx.lineWidth=.7;ctx.stroke();}line([-.7,-.7,.005],[-.45,-.7,.005],"#e28b79",2);line([-.7,-.7,.005],[-.7,-.45,.005],"#8acfae",2);line([-.7,-.7,.005],[-.7,-.7,.255],"#8fbcea",2);ctx.fillStyle="#88a2b7";ctx.font="12px Segoe UI, sans-serif";ctx.fillText("GLOBAL FRAME · Z UP",36,680);ctx.fillStyle="#74d9cc";ctx.font="600 13px Segoe UI, sans-serif";ctx.fillText(`${robotName.toUpperCase()} / CHOREOGRAPHY`,36,40);ctx.fillStyle="#e7f3f9";ctx.font="500 26px Segoe UI, sans-serif";ctx.fillText((state.current_state||"Forward kinematics").replaceAll("_"," "),36,76);ctx.textAlign="right";ctx.fillStyle="#a3bdcf";ctx.font="12px Segoe UI, sans-serif";ctx.fillText(replay?`RECORDED RUNTIME  /  ${replayTime.toFixed(1)} s` : "LIVE RUNTIME  /  TCP 9095",1244,40);ctx.textAlign="left";if(!worlds.size){ctx.textAlign="center";ctx.font="22px Segoe UI, sans-serif";ctx.fillStyle="#9fb8cb";ctx.fillText("Waiting for robot transforms…",640,355);ctx.textAlign="left";}}
-function seek(t){replayTime=t;cursor=0;worlds.clear();while(cursor<replay.frames.length&&replay.frames[cursor].t<=t){const frame=replay.frames[cursor++];accept(frame.topic,frame.msg);}}
-function clockLabel(t){return `${Math.floor(t/60)}:${String(Math.floor(t%60)).padStart(2,"0")}`;}
-function setPlaying(value){playing=value;$("play").textContent=playing?"Ⅱ":"▶";$("play").setAttribute("aria-label",playing?"Pause replay":"Play replay");}
-function tick(now){const dt=Math.min(.1,(now-previousClock)/1000);previousClock=now;if(replay&&playing){replayTime+=dt;if(replayTime>=replay.duration){if(exporting){replayTime=replay.duration;setPlaying(false);exportRecorder?.stop();}else seek(0);}while(cursor<replay.frames.length&&replay.frames[cursor].t<=replayTime){const frame=replay.frames[cursor++];accept(frame.topic,frame.msg);}$("scrub").value=replayTime;$("time").textContent=`${clockLabel(replayTime)} / ${clockLabel(replay.duration)}`;if(exporting)$("export-status").textContent=`Recording ${Math.round(100*replayTime/replay.duration)}% · keep this tab open`;}render();requestAnimationFrame(tick);}
-async function api(service,args={}){const response=await fetch("/api/call",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({service,args})});const result=await response.json();if(!result.result)throw Error(result.status||"Request failed");return result;}
-$("toggle").onclick=()=>api("/fsm/set_running",{data:!state.running}).catch(error=>$("notice").textContent=error.message);
-$("reset").onclick=async()=>{try{await api("/fsm/set_running",{data:false});await api("/joint_state_publisher/reset");}catch(error){$("notice").textContent=error.message;}};
-$("camera").onclick=()=>{camera={...eyeDefault,target:[...eyeDefault.target]};autoFitted=false;};
-let dragging=null;canvas.onpointerdown=event=>{dragging=[event.clientX,event.clientY];canvas.setPointerCapture(event.pointerId);};canvas.onpointerup=()=>dragging=null;canvas.onpointermove=event=>{if(!dragging)return;camera.yaw-=(event.clientX-dragging[0])*.006;camera.pitch=Math.max(.05,Math.min(1.35,camera.pitch+(event.clientY-dragging[1])*.006));dragging=[event.clientX,event.clientY];};canvas.onwheel=event=>{event.preventDefault();camera.distance=Math.max(1.4,Math.min(15,camera.distance*Math.exp(event.deltaY*.001)));};
-$("play").onclick=()=>setPlaying(!playing);$("scrub").oninput=event=>seek(Number(event.target.value));
-async function exportVideo(){
-  if(!replay||exporting)return;
-  if(!canvas.captureStream||!window.MediaRecorder){$("export-status").textContent="Video export needs a browser with MediaRecorder support.";return;}
-  const types=["video/webm;codecs=vp9","video/webm;codecs=vp8","video/webm"],mime=types.find(type=>MediaRecorder.isTypeSupported(type));
-  if(!mime)throw Error("This browser cannot encode WebM");
-  seek(0);setPlaying(true);exporting=true;
-  $("export").disabled=true;$("scrub").disabled=true;$("play").disabled=true;
-  const stream=canvas.captureStream(30),chunks=[];
-  exportRecorder=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:5000000});
-  exportRecorder.ondataavailable=event=>{if(event.data.size)chunks.push(event.data);};
-  exportRecorder.onstop=async()=>{
-    stream.getTracks().forEach(track=>track.stop());exporting=false;
-    let blob=new Blob(chunks,{type:mime});
-    try{
-      const response=await fetch("/api/video",{method:"POST",headers:{"Content-Type":"video/webm","X-Video-Duration":String(replay.duration)},body:blob});
-      const result=await response.json();
-      if(!response.ok)throw Error(result.status||"Video could not be finalized");
-      // Use the finalized file for downloads too; raw MediaRecorder chunks
-      // omit Duration even though their encoded frames play successfully.
-      const finalized=await fetch(`/${result.path}?export=${Date.now()}`,{cache:"no-store"});
-      if(!finalized.ok)throw Error("Saved video could not be downloaded");
-      blob=await finalized.blob();
-      $("export-status").textContent=`Saved to portfolio/demo.webm · ${result.duration.toFixed(1)} seconds · ready for the portfolio page.`;
-    }catch(_error){
-      $("export-status").textContent="Recording ready to download. Use the local viewer server to finalize its duration before publishing.";
-    }
-    if($("download").href.startsWith("blob:"))URL.revokeObjectURL($("download").href);
-    $("download").href=URL.createObjectURL(blob);$("download").hidden=false;window.lastVideoBlob=blob;
-    $("export").disabled=false;$("scrub").disabled=false;$("play").disabled=false;setPlaying(false);
-  };
-  exportRecorder.start(1000);
+function vector(text){const values=text.trim().split(/[,\s]+/).map(Number);if(values.length!==3||values.some(v=>!Number.isFinite(v)))throw Error("Enter three finite numbers for each global pose field.");return values;}
+function readRobot(){
+  const xml=new DOMParser().parseFromString($("urdf").value,"application/xml");
+  if(xml.querySelector("parsererror"))throw Error("The robot description must be valid XML.");
+  const robot=xml.documentElement;
+  if(robot.localName!=="robot")throw Error("The description must contain a robot element.");
+  const links=Array.from(robot.children).filter(e=>e.localName==="link").map(e=>e.getAttribute("name"));
+  const joints=Array.from(robot.children).filter(e=>e.localName==="joint").map(el=>({name:el.getAttribute("name"),type:el.getAttribute("type"),parent:direct(el,"parent")?.getAttribute("link"),child:direct(el,"child")?.getAttribute("link")}));
+  return {name:robot.getAttribute("name")||"Robot",links,joints};
 }
-window.exportRecording=exportVideo;$("export").onclick=()=>exportVideo().catch(error=>$("export-status").textContent=error.message);
-async function start(){if(replayURL){const response=await fetch(replayURL);if(!response.ok)throw Error("Replay file was not found. Record the demo first.");replay=await response.json();parseRobot(replay.robot_description);$("mode").textContent="RECORDED TELEMETRY";$("live-controls").hidden=true;$("replay-controls").hidden=false;$("timeline").hidden=false;$("scrub").max=replay.duration;setConnection("Recorded runtime replay",true);seek(0);if(params.get("export")==="1")setTimeout(()=>exportVideo().catch(error=>$("export-status").textContent=error.message),500);}else{const events=new EventSource("/events");events.onmessage=event=>{try{const value=JSON.parse(event.data);accept(value.topic,value.msg);}catch(error){$("notice").textContent=error.message;}};events.onerror=()=>setConnection("Waiting for local viewer server",false);}}
-requestAnimationFrame(tick);start().catch(error=>{$("notice").textContent=error.message;setConnection("Replay unavailable",false);});
-
-$("poster").onclick=()=>canvas.toBlob(async blob=>{if(!blob)return;const link=$("poster-download");link.href=URL.createObjectURL(blob);link.hidden=false;try{const response=await fetch("/api/poster",{method:"POST",headers:{"Content-Type":"image/png"},body:blob});if(!response.ok)throw Error();$("notice").textContent="Saved still frame to portfolio/poster.png.";}catch(_error){$("notice").textContent="Still frame ready. Download it as poster.png beside the portfolio page.";}},"image/png");
+function rebuild(){
+  const values=jointValues();model=readRobot();$("robot-name").textContent=model.name;
+  $("joints").replaceChildren();
+  for(const j of model.joints){
+    if(j.type==="fixed")continue;
+    const label=document.createElement("label"),name=document.createElement("span"),type=document.createElement("small"),input=document.createElement("input");
+    label.className="joint-label";name.textContent=j.name;type.textContent=j.type==="prismatic"?"meters":"radians";label.append(name,type);
+    input.type="number";input.step="0.05";input.value=values[j.name]??(j.type==="prismatic"?.25:.6);input.dataset.joint=j.name;input.setAttribute("aria-label",j.name+" position");
+    $("joints").append(label,input);
+  }
+  if(!$("joints").children.length){const text=document.createElement("p");text.textContent="This robot has no movable joints.";$("joints").append(text);}
+}
+function jointValues(){return Object.fromEntries(Array.from($("joints").querySelectorAll("input")).map(el=>[el.dataset.joint,Number(el.value)]));}
+function fit(){
+  const points=[...worlds.values()].map(m=>m.slice(12,15)).filter(p=>p.every(Number.isFinite));
+  if(!points.length)return;
+  const lo=[0,1,2].map(i=>Math.min(...points.map(p=>p[i]))),hi=[0,1,2].map(i=>Math.max(...points.map(p=>p[i])));
+  center=lo.map((v,i)=>(v+hi[i])/2);
+  const cy=Math.cos(yaw),sy=Math.sin(yaw),cp=Math.cos(pitch),sp=Math.sin(pitch);
+  const projected=points.map(p=>{const [x,y,z]=p.map((v,i)=>v-center[i]);return [cy*x-sy*y,sp*(sy*x+cy*y)-cp*z];});
+  const span=[0,1].map(i=>Math.max(...projected.map(p=>p[i]))-Math.min(...projected.map(p=>p[i])));
+  scale=Math.min(800/Math.max(.6,span[0]),500/Math.max(.6,span[1]));zoom=1;
+}
+function project(p){const [x,y,z]=p.map((v,i)=>v-center[i]),cy=Math.cos(yaw),sy=Math.sin(yaw),cp=Math.cos(pitch),sp=Math.sin(pitch),u=cy*x-sy*y,v=sy*x+cy*y;return [540+u*scale*zoom,350+(sp*v-cp*z)*scale*zoom];}
+function line(a,b,color,width=1){const p=project(a),q=project(b);ctx.beginPath();ctx.moveTo(...p);ctx.lineTo(...q);ctx.strokeStyle=color;ctx.lineWidth=width;ctx.stroke();}
+function draw(){
+  ctx.fillStyle="#0e1b28";ctx.fillRect(0,0,1080,700);
+  for(let i=-10;i<=10;i++){line([i*.25,-2.5,0],[i*.25,2.5,0],"#223749");line([-2.5,i*.25,0],[2.5,i*.25,0],"#223749");}
+  if(model&&worlds.size){
+    for(const j of model.joints){const p=worlds.get(j.parent),c=worlds.get(j.child);if(p&&c&&p.every(Number.isFinite)&&c.every(Number.isFinite))line(p.slice(12,15),c.slice(12,15),"#7fe4d3",5);}
+    for(const [name,m] of worlds){
+      if(m.length!==16||!m.every(Number.isFinite))continue;
+      const p=m.slice(12,15);
+      for(let axis=0;axis<3;axis++)line(p,p.map((v,i)=>v+m[4*axis+i]*.14),["#ef827c","#80d2a6","#7cb4ed"][axis],2);
+      const s=project(p);ctx.beginPath();ctx.arc(...s,4,0,Math.PI*2);ctx.fillStyle="#d6f5f0";ctx.fill();ctx.fillStyle="#d3e7f2";ctx.font="12px system-ui";ctx.fillText(name,s[0]+8,s[1]-8);
+    }
+  }else{ctx.fillStyle="#7f9aaf";ctx.font="18px system-ui";ctx.textAlign="center";ctx.fillText("Select Show pose to display the robot",540,340);ctx.textAlign="left";}
+  requestAnimationFrame(draw);
+}
+async function apply(){
+  const button=$("apply");button.disabled=true;$("notice").className="";$("notice").textContent="Loading robot pose…";
+  try{
+    rebuild();const joints=jointValues(),xyz=vector($("xyz").value),rpy=vector($("rpy").value);
+    if(Object.values(joints).some(v=>!Number.isFinite(v)))throw Error("Joint positions must be finite numbers.");
+    const response=await fetch("/api/evaluate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({urdf:$("urdf").value,joints,xyz,rpy})});
+    const data=await response.json();if(!response.ok||data.error)throw Error(data.error||"Unable to load this robot pose.");
+    worlds=new Map(data.world.transforms.map(e=>[e.child_frame_id,e.matrix]));
+    $("robot-name").textContent=model.name;
+    $("notice").textContent=worlds.size?"Pose displayed.":"No robot pose is available for this configuration.";
+    fit();
+  }catch(error){showError(error);}finally{button.disabled=false;}
+}
+async function example(){const response=await fetch("/api/example");if(!response.ok)throw Error("Unable to load the example robot.");$("urdf").value=(await response.json()).urdf;rebuild();worlds.clear();$("notice").textContent="Example loaded. Select Show pose to display it.";}
+function showError(error){$("notice").className="error";$("notice").textContent=error.message;}
+$("apply").onclick=apply;$("sample").onclick=()=>example().catch(showError);$("parse").onclick=()=>{try{rebuild();$("notice").className="";$("notice").textContent="Joint controls updated.";}catch(error){showError(error);}};$("fit").onclick=fit;
+let drag=null;canvas.onpointerdown=e=>{drag=[e.clientX,e.clientY];canvas.setPointerCapture(e.pointerId);};canvas.onpointerup=()=>drag=null;canvas.onpointercancel=()=>drag=null;canvas.onpointermove=e=>{if(!drag)return;yaw+=(e.clientX-drag[0])*.008;pitch=Math.max(-1.4,Math.min(1.4,pitch+(e.clientY-drag[1])*.008));drag=[e.clientX,e.clientY];};canvas.addEventListener("wheel",e=>{e.preventDefault();zoom=Math.max(.1,Math.min(10,zoom*Math.exp(-e.deltaY*.001)));},{passive:false});
+example().catch(showError);requestAnimationFrame(draw);

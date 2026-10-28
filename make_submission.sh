@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# This checkout contains the chosen Python starter directly at its root.
 set -euo pipefail
 if [[ "${1:-python}" != python || $# -gt 1 ]]; then
     echo "usage: bash make_submission.sh [python]" >&2
